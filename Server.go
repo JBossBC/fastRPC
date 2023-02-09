@@ -2,20 +2,25 @@ package fastRPC
 
 import (
 	"bufio"
+	"github.com/golang/snappy"
 	"io/ioutil"
 	"net"
 	"reflect"
+	"sync"
 )
 
 const MaxConnectionNumbers = 1024
 const CompressAlgorithm = "snappy"
+const MaxTransportByte = 1460
 
 type fastRPCServer struct {
-	server        *net.TCPListener
-	RpcServer     RPCServer
-	Options       *ServerOption
+	server    *net.TCPListener
+	RpcServer RPCServer
+	Options   *ServerOption
 	//grpc is abandoned
 	handlerMethod map[string]any
+	conns         map[string]map[net.Conn]bool
+	wg            sync.WaitGroup
 }
 type RPCServer interface {
 }
@@ -33,7 +38,7 @@ type ServerOption struct {
 
 func NewFastRPCServer(server RPCServer, option *ServerOption) (result *fastRPCServer) {
 	result = &fastRPCServer{
-		server:&net.TCPListener{},
+		server:  &net.TCPListener{},
 		Options: defaultServerOption,
 	}
 	if option != nil {
@@ -46,14 +51,32 @@ func (fastRPC *fastRPCServer) Run() {
 	for {
 		accept, err := fastRPC.server.Accept()
 		if err != nil {
-			return 
+			return
 		}
-		accept.
+		fastRPC.wg.Add(1)
+		go func() {
+			fastRPC.handlerConn(accept)
+			fastRPC.wg.Done()
+		}()
 	}
 }
-// analysis data to golang struct
-func(fastRPC *fastRPCServer)receiveBefore(){
 
+func (fastRPC *fastRPCServer) handlerConn(conn net.Conn) {
+	var data = make([]byte, MaxTransportByte)
+	read, err := conn.Read(data)
+	if err != nil {
+		return
+	}
+
+}
+
+// analysis data to golang struct
+func (fastRPC *fastRPCServer) receiveInterceptor(data []byte) (DataStandards, error) {
+	var encodingData = make([]byte, MaxTransportByte)
+	decode, err := snappy.Decode(encodingData, data)
+	if err != nil {
+		return
+	}
 }
 
 func (fastRPC *fastRPCServer) registerMethod(server RPCServer) {
@@ -65,7 +88,7 @@ func (fastRPC *fastRPCServer) registerMethod(server RPCServer) {
 		fastRPC.handlerMethod[method.String()] = nil
 	}
 }
-func()sendBefore() {
+func (fastRPC *fastRPCServer) sendInterceptor(standards *DataStandards) []byte {
 
 }
 func (fastRPC *fastRPCServer) callFunc(methodName string, dataSource bufio.Reader) {
