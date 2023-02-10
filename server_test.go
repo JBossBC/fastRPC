@@ -7,10 +7,9 @@ import (
 )
 
 type customRPC struct {
-	RPCServer
 }
 
-func (rpc *customRPC) handlerHelloWorld(args ...string) string {
+func (rpc *customRPC) HandlerHelloWorld(args ...string) string {
 	builder := strings.Builder{}
 	builder.WriteString("Hello World")
 	for i := 0; i < len(args); i++ {
@@ -21,5 +20,10 @@ func (rpc *customRPC) handlerHelloWorld(args ...string) string {
 
 func TestNewFastRPCServer(t *testing.T) {
 	server := NewFastRPCServer(&customRPC{}, nil)
+	err := server.Run()
+	if err != nil {
+		fmt.Println(err)
+	}
 	fmt.Println(server)
 }
+func TestConvert

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 )
@@ -65,7 +66,7 @@ func NewFastRPCServer(server RPCServer, option *ServerOption) (result *fastRPCSe
 	result.registerMethod(server)
 	return result
 }
-func (fastRPC *fastRPCServer) Run() {
+func (fastRPC *fastRPCServer) Run() error {
 	defer func() {
 		fastRPC.wg.Wait()
 		if fastRPC.quit.HasFired() {
@@ -79,11 +80,33 @@ func (fastRPC *fastRPCServer) Run() {
 		}
 		fastRPC.mutex.Unlock()
 	}()
+	var timeoutWait time.Duration
 	for {
 		accept, err := fastRPC.server.Accept()
+
 		if err != nil {
-			fastRPC.quit.Fire()
-			return
+			if _, ok := err.(syscall.Errno); ok {
+				if timeoutWait == 0 {
+					timeoutWait = 5 * time.Millisecond
+				} else {
+					timeoutWait *= 2
+				}
+				if max := 1 * time.Second; timeoutWait > max {
+					timeoutWait = max
+				}
+				timer := time.NewTimer(timeoutWait)
+				select {
+				case <-timer.C:
+				case <-fastRPC.quit.Done():
+					timer.Stop()
+					return nil
+				}
+				continue
+			}
+			if fastRPC.quit.HasFired() {
+				return nil
+			}
+			return err
 		}
 		fastRPC.wg.Add(1)
 		go func() {
@@ -209,6 +232,9 @@ func (fastRPC *fastRPCServer) receiveInterceptor(data []byte) (result *DataStand
 func (fastRPC *fastRPCServer) registerMethod(server RPCServer) {
 	value := reflect.ValueOf(server)
 	method := value.NumMethod()
+	if fastRPC.handlerMethod == nil {
+		fastRPC.handlerMethod = make(map[string]reflect.Value)
+	}
 	for i := 0; i < method; i++ {
 		method := value.Method(i)
 		//promise cant repeat
