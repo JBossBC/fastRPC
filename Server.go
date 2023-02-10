@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unsafe"
 )
 
 type CompressAlgorithm string
@@ -167,7 +166,7 @@ func (fastRPC *fastRPCServer) handlerConn(conn net.Conn) {
 			}
 			defer func() {
 				// recover panic to resolve the error which comes from the rpc executing
-				if panicError := recover(); &panicError != nil {
+				if panicError := recover(); panicError != any(nil) {
 					mutex := fastRPC.connsMutex[conn]
 					mutex.Lock()
 					resp, _ := fastRPC.sendInterceptor(result)
@@ -283,7 +282,7 @@ func (fastRPC *fastRPCServer) callFunc(methodName string, params []byte) ([]byte
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, toByte...)
+			result = append(result, combineToJson(returnValues[i].Type().Name(), string(toByte), returnValues[i].Kind())...)
 		}
 	}
 	return result, nil
@@ -291,30 +290,46 @@ func (fastRPC *fastRPCServer) callFunc(methodName string, params []byte) ([]byte
 
 func convertValueToByte(value reflect.Value) (result []byte, err error) {
 	defer func() {
-		if panicErr := recover(); &panicErr != nil {
+		if panicErr := recover(); panicErr != any(nil) {
 			result = nil
 			fmt.Println(panicErr)
 			err = fmt.Errorf("params analy error")
 		}
 	}()
-	result = make([]byte, 0, 8)
+	result = make([]byte, 0, 64)
 	switch value.Kind() {
 	case reflect.String:
 		result = append(result, []byte(value.String())...)
 	case reflect.Int, reflect.Int64, reflect.Int8, reflect.Int16, reflect.Int32:
 		result = append(result, []byte(strconv.FormatInt(value.Int(), 10))...)
 	case reflect.Slice:
-		slice := unsafe.Slice(&value, value.Len())
-		for i := 0; i < len(slice); i++ {
-			temp, err := convertValueToByte(slice[i])
+		var tempArr = make([]byte, 0, value.Len()*value.Type().Elem().Align())
+		for i := 0; i < value.Len(); i++ {
+			temp, err := convertValueToByte(value.Index(i))
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, temp...)
+			if i != value.Len()-1 {
+				temp = append(temp, ',')
+			}
+			tempArr = append(tempArr, temp...)
 		}
+		result = append(result, combineToJson(value.Type().Name(), string(tempArr), value.Kind())...)
+	case reflect.Struct:
+		var number = value.NumField()
+		var temp = make([]byte, 0, value.Type().Size())
+		for i := 0; i < number; i++ {
+			var fieldValue = value.Field(i)
+			bytes, err := convertValueToByte(fieldValue)
+			if err != nil {
+				return nil, err
+			}
+			temp = append(temp, combineToJson(fieldValue.Type().Name(), string(bytes), fieldValue.Kind())...)
+		}
+		result = append(result, combineToJson(value.Type().Name(), string(temp), value.Kind())...)
 	case reflect.Bool:
 		result = append(result, strconv.FormatBool(value.Bool())...)
-	case reflect.Pointer, reflect.Interface:
+	case reflect.Pointer, reflect.Interface, reflect.Uintptr:
 		elem := value.Elem()
 		temp, err := convertValueToByte(elem)
 		if err != nil {
@@ -325,9 +340,55 @@ func convertValueToByte(value reflect.Value) (result []byte, err error) {
 		result = append(result, strconv.FormatFloat(value.Float(), 'E', -1, 32)...)
 	case reflect.Complex64, reflect.Complex128:
 		result = append(result, strconv.FormatComplex(value.Complex(), 'E', -1, 32)...)
+	//maybe can improve
+	case reflect.Map:
+		keys := value.MapKeys()
+		if len(keys) <= 0 {
+			return
+		}
+		var tempArr = make([]byte, 0, 2*len(keys)*(keys[0].Type().Align())*value.MapIndex(keys[0]).Type().Align())
+		for i := 0; i < len(keys); i++ {
+			var keyValue = value.MapIndex(keys[0])
+			keyBytes, err := convertValueToByte(keys[i])
+			if err != nil {
+				return nil, err
+			}
+			valueBytes, err := convertValueToByte(keyValue)
+			if err != nil {
+				return nil, err
+			}
+			tempArr = append(tempArr, combineToJson(string(keyBytes), string(valueBytes), reflect.String)...)
+		}
+		result = append(result, combineToJson("", string(tempArr), reflect.Struct)...)
 	}
 	return result, nil
 }
+
+func combineToJson(key string, value string, valueType reflect.Kind) []byte {
+	sb := strings.Builder{}
+	sb.WriteString("\"")
+	sb.WriteString(key)
+	sb.WriteString("\": ")
+	switch valueType {
+	case reflect.String:
+		sb.WriteString("\"")
+		sb.WriteString(value)
+		sb.WriteString("\"")
+	case reflect.Int, reflect.Int64, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.Bool:
+		sb.WriteString(value)
+	case reflect.Slice, reflect.Array:
+		sb.WriteString("[")
+		sb.WriteString(value)
+		sb.WriteString("]")
+	case reflect.Struct:
+		sb.WriteString("{")
+		sb.WriteString(value)
+		sb.WriteString("}")
+	}
+	sb.WriteString("\n")
+	return []byte(sb.String())
+}
+
 func (fastRPC *fastRPCServer) Stop() {
 	fastRPC.quit.Fire()
 	defer func() {
