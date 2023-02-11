@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fastRPC/internal/frpcsync"
 	"fmt"
-	"github.com/golang/snappy"
 	"net"
 	"reflect"
 	"strconv"
@@ -19,13 +18,14 @@ type CompressAlgorithm string
 
 const MaxConnectionNumbers = 1024
 const MaxTransportByte = 1460
+const DefaultAddress = ":8080"
 
 var (
 	defaultCompression CompressAlgorithm = "snappy"
 )
 
 type fastRPCServer struct {
-	server    *net.TCPListener
+	server    net.Listener
 	RpcServer RPCServer
 	Options   *ServerOption
 	//grpc is abandoned
@@ -46,24 +46,41 @@ type RPCServer interface {
 var defaultServerOption = &ServerOption{
 	MaxConnNums:       MaxConnectionNumbers,
 	CompressAlgorithm: defaultCompression,
+	Address:           DefaultAddress,
 }
 
 type ServerOption struct {
 	MaxConnNums       int
 	CompressAlgorithm CompressAlgorithm
 	TransportWays     string
+	Address           string
 }
 
-func NewFastRPCServer(server RPCServer, option *ServerOption) (result *fastRPCServer) {
+func NewFastRPCServer(server RPCServer, option *ServerOption) (result *fastRPCServer, err error) {
 	result = &fastRPCServer{
-		server:  &net.TCPListener{},
-		Options: defaultServerOption,
+		mutex:         sync.Mutex{},
+		rwmutex:       sync.RWMutex{},
+		handlerMethod: map[string]reflect.Value{},
+		conns:         map[string]map[net.Conn]bool{},
+		quit:          frpcsync.Event{},
+		done:          frpcsync.Event{},
+		connsMutex:    map[net.Conn]*sync.Mutex{},
+		Options:       defaultServerOption,
 	}
 	if option != nil {
 		result.Options = option
 	}
+	var address = defaultServerOption.Address
+	if option != nil && option.Address != "" {
+		address = option.Address
+	}
+	listen, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	result.server = listen
 	result.registerMethod(server)
-	return result
+	return result, nil
 }
 func (fastRPC *fastRPCServer) Run() error {
 	defer func() {
@@ -82,7 +99,6 @@ func (fastRPC *fastRPCServer) Run() error {
 	var timeoutWait time.Duration
 	for {
 		accept, err := fastRPC.server.Accept()
-
 		if err != nil {
 			if _, ok := err.(syscall.Errno); ok {
 				if timeoutWait == 0 {
@@ -169,8 +185,9 @@ func (fastRPC *fastRPCServer) handlerConn(conn net.Conn) {
 				if panicError := recover(); panicError != any(nil) {
 					mutex := fastRPC.connsMutex[conn]
 					mutex.Lock()
+					result.Result = []byte("system error")
 					resp, _ := fastRPC.sendInterceptor(result)
-					conn.Write(resp)
+					conn.Write(resp[:len(resp)])
 					mutex.Unlock()
 				}
 			}()
@@ -190,7 +207,7 @@ func (fastRPC *fastRPCServer) handlerConn(conn net.Conn) {
 			}
 			mutex := fastRPC.connsMutex[conn]
 			mutex.Lock()
-			conn.Write(interceptor)
+			conn.Write(interceptor[:len(interceptor)])
 			mutex.Unlock()
 		}()
 	}
@@ -209,19 +226,30 @@ func (fastRPC *fastRPCServer) closeConn(addr string, conn net.Conn) {
 	delete(fastRPC.connsMutex, conn)
 	delete(fastRPC.conns[addr], conn)
 }
+func findBytesEnding(data []byte) int {
+	var zero byte = '0' - '0'
+	for i := 0; i < len(data); i++ {
+		if data[i] == zero {
+			return i
+		}
+	}
+	return -1
+}
 
 // analysis data to golang struct
 func (fastRPC *fastRPCServer) receiveInterceptor(data []byte) (result *DataStandards, err error) {
-	var encodingData = make([]byte, MaxTransportByte)
-	decode, err := snappy.Decode(encodingData, data)
-	if err != nil {
-		return nil, fmt.Errorf("error analy the compression data,only support the snappy ")
+	length := findBytesEnding(data)
+	//TODO current cancel the compress ways
+	//encodingData, err := snappy.Decode(nil, data)
+	//if err != nil {
+	//	return nil, fmt.Errorf("error analy the compression data,only support the snappy ")
+	//}
+	if length <= 0 {
+		return nil, fmt.Errorf("transport data error: valid data length is zero ")
 	}
-	if len(decode) > len(encodingData) {
-		encodingData = decode
-	}
+	data = data[:length]
 	result = &DataStandards{}
-	err = json.Unmarshal(encodingData, result)
+	err = json.Unmarshal(data, result)
 	if err != nil {
 		return nil, fmt.Errorf("cant parse data by json format")
 	}
@@ -231,9 +259,6 @@ func (fastRPC *fastRPCServer) receiveInterceptor(data []byte) (result *DataStand
 func (fastRPC *fastRPCServer) registerMethod(server RPCServer) {
 	value := reflect.ValueOf(server)
 	method := value.NumMethod()
-	if fastRPC.handlerMethod == nil {
-		fastRPC.handlerMethod = make(map[string]reflect.Value)
-	}
 	for i := 0; i < method; i++ {
 		method := value.Method(i)
 		//promise cant repeat
@@ -245,18 +270,19 @@ func (fastRPC *fastRPCServer) sendInterceptor(resp *Response) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var result []byte
-	var bytes = make([]byte, MaxTransportByte)
-	decode, err := snappy.Decode(bytes, marshal)
-	if err != nil {
-		return nil, err
-	}
-	if len(decode) > len(bytes) {
-		result = decode
-	} else {
-		result = bytes
-	}
-	return result, nil
+	//var result []byte
+	//var bytes = make([]byte, MaxTransportByte)
+	//decode := snappy.Encode(bytes, marshal)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//if len(decode) > len(bytes) {
+	//	result = decode
+	//} else {
+	//	result = bytes
+	//}
+	//TODO current cancel the compress ways
+	return marshal, nil
 }
 func (fastRPC *fastRPCServer) callFunc(methodName string, params []byte) ([]byte, error) {
 	methodParams := strings.Split(string(params), " ")

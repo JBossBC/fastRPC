@@ -21,7 +21,7 @@ func (rpc *customRPC) HandlerHelloWorld(args ...string) string {
 }
 
 func TestNewFastRPCServer(t *testing.T) {
-	server := NewFastRPCServer(&customRPC{}, nil)
+	server, _ := NewFastRPCServer(&customRPC{}, nil)
 	err := server.Run()
 	if err != nil {
 		fmt.Println(err)
@@ -30,7 +30,7 @@ func TestNewFastRPCServer(t *testing.T) {
 	fmt.Println(server)
 }
 func TestCallFunc(t *testing.T) {
-	server := NewFastRPCServer(&customRPC{}, nil)
+	server, _ := NewFastRPCServer(&customRPC{}, nil)
 	result, err := server.callFunc("HandlerHelloWorld", []byte("hello hello hello"))
 	if err != nil {
 		fmt.Println(err.Error())
