@@ -1,6 +1,7 @@
 package fastRPC
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -25,13 +26,28 @@ func TestNewFastRPCServer(t *testing.T) {
 	if err != nil {
 		fmt.Println(err)
 	}
+
 	fmt.Println(server)
+}
+func TestCallFunc(t *testing.T) {
+	server := NewFastRPCServer(&customRPC{}, nil)
+	result, err := server.callFunc("HandlerHelloWorld", []byte("hello hello hello"))
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	fmt.Println(string(result))
 }
 
 type test struct {
+	Name       string
+	Age        int
+	Sex        int
+	result     map[string]interface{}
+	structTest test2
+}
+type test2 struct {
 	Name string
-	Age  int
-	Sex  int
 }
 
 func TestConvertValueSlice(t *testing.T) {
@@ -48,14 +64,23 @@ func TestConvertValueSlice(t *testing.T) {
 }
 func TestConvertValueStruct(t *testing.T) {
 	t2 := test{
-		Name: "xiyang",
-		Age:  47,
-		Sex:  1,
+		Name:   "xiyang",
+		Age:    47,
+		Sex:    1,
+		result: map[string]interface{}{"xiyang": "hello"},
+		structTest: test2{
+			Name: "hello",
+		},
 	}
-	value, err := convertValueToByte(reflect.ValueOf(t2))
+	value, err := convertValueToByte(reflect.ValueOf(&t2))
+	sb := strings.Builder{}
+	sb.WriteString("{")
+	sb.WriteString(string(value))
+	sb.WriteString("}")
+	println("is json? ", json.Valid([]byte(sb.String())))
 	if err != nil {
 		fmt.Println(err.Error())
 		return
 	}
-	println(string(value))
+	println(sb.String())
 }

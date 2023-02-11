@@ -237,7 +237,7 @@ func (fastRPC *fastRPCServer) registerMethod(server RPCServer) {
 	for i := 0; i < method; i++ {
 		method := value.Method(i)
 		//promise cant repeat
-		fastRPC.handlerMethod[method.String()] = method
+		fastRPC.handlerMethod[value.Type().Method(i).Name] = method
 	}
 }
 func (fastRPC *fastRPCServer) sendInterceptor(resp *Response) ([]byte, error) {
@@ -260,18 +260,31 @@ func (fastRPC *fastRPCServer) sendInterceptor(resp *Response) ([]byte, error) {
 }
 func (fastRPC *fastRPCServer) callFunc(methodName string, params []byte) ([]byte, error) {
 	methodParams := strings.Split(string(params), " ")
-	methodCall := fastRPC.handlerMethod[methodName]
-	convertValue := make([]reflect.Value, len(methodParams))
-	for i := 0; i < len(params); i++ {
-		convertValue[i] = reflect.ValueOf(methodParams[i])
+	methodCall, ok := fastRPC.handlerMethod[methodName]
+	if !ok {
+		return nil, fmt.Errorf("call function cant exists")
 	}
 	funcInputNums := methodCall.Type().NumIn()
-	var returnValues []reflect.Value
+	convertValue := make([]reflect.Value, funcInputNums)
 	if funcInputNums < len(methodParams) {
-		returnValues = methodCall.CallSlice(convertValue)
+		diff := len(methodParams) - funcInputNums
+		var merge = make([]string, 0, diff+1)
+		if methodCall.Type().IsVariadic() {
+			for i := diff - 1; i < len(methodParams); i++ {
+				merge = append(merge, methodParams[i])
+			}
+		} else {
+			return nil, fmt.Errorf("your input exceed range")
+		}
+		convertValue[funcInputNums-1] = reflect.ValueOf(merge)
 	} else {
-		returnValues = methodCall.Call(convertValue)
+		convertValue[funcInputNums-1] = reflect.ValueOf(methodParams[funcInputNums-1])
 	}
+	for i := 0; i < len(convertValue)-1; i++ {
+		convertValue[i] = reflect.ValueOf(methodParams[i])
+	}
+	var returnValues []reflect.Value
+	returnValues = methodCall.CallSlice(convertValue)
 	funcOutputNums := methodCall.Type().NumOut()
 	var result []byte = make([]byte, 0, MaxTransportByte)
 	if len(returnValues) > funcOutputNums {
@@ -282,7 +295,7 @@ func (fastRPC *fastRPCServer) callFunc(methodName string, params []byte) ([]byte
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, combineToJson(returnValues[i].Type().Name(), string(toByte), returnValues[i].Kind())...)
+			result = append(result, combineToJson(methodName, string(toByte), returnValues[i].Kind())...)
 		}
 	}
 	return result, nil
@@ -296,7 +309,7 @@ func convertValueToByte(value reflect.Value) (result []byte, err error) {
 			err = fmt.Errorf("params analy error")
 		}
 	}()
-	result = make([]byte, 0, 64)
+	result = make([]byte, 0, value.Type().Size()*2)
 	switch value.Kind() {
 	case reflect.String:
 		result = append(result, []byte(value.String())...)
@@ -320,11 +333,26 @@ func convertValueToByte(value reflect.Value) (result []byte, err error) {
 		var temp = make([]byte, 0, value.Type().Size())
 		for i := 0; i < number; i++ {
 			var fieldValue = value.Field(i)
+			fieldName := value.Type().Field(i).Name
 			bytes, err := convertValueToByte(fieldValue)
 			if err != nil {
 				return nil, err
 			}
-			temp = append(temp, combineToJson(fieldValue.Type().Name(), string(bytes), fieldValue.Kind())...)
+			fieldType := fieldValue.Kind()
+			if fieldType == reflect.Struct {
+				temp = append(temp, bytes...)
+				if i != number-1 {
+					temp = append(temp, ',')
+				}
+				continue
+			}
+			if fieldType == reflect.Map {
+				fieldType = reflect.Int
+			}
+			temp = append(temp, combineToJson(fieldName, string(bytes), fieldType)...)
+			if i != number-1 {
+				temp = append(temp, ',')
+			}
 		}
 		result = append(result, combineToJson(value.Type().Name(), string(temp), value.Kind())...)
 	case reflect.Bool:
@@ -348,7 +376,7 @@ func convertValueToByte(value reflect.Value) (result []byte, err error) {
 		}
 		var tempArr = make([]byte, 0, 2*len(keys)*(keys[0].Type().Align())*value.MapIndex(keys[0]).Type().Align())
 		for i := 0; i < len(keys); i++ {
-			var keyValue = value.MapIndex(keys[0])
+			var keyValue = value.MapIndex(keys[i])
 			keyBytes, err := convertValueToByte(keys[i])
 			if err != nil {
 				return nil, err
@@ -359,7 +387,7 @@ func convertValueToByte(value reflect.Value) (result []byte, err error) {
 			}
 			tempArr = append(tempArr, combineToJson(string(keyBytes), string(valueBytes), reflect.String)...)
 		}
-		result = append(result, combineToJson("", string(tempArr), reflect.Struct)...)
+		result = append(result, combineToJson("", string(tempArr), reflect.Map)...)
 	}
 	return result, nil
 }
@@ -380,7 +408,12 @@ func combineToJson(key string, value string, valueType reflect.Kind) []byte {
 		sb.WriteString("[")
 		sb.WriteString(value)
 		sb.WriteString("]")
-	case reflect.Struct:
+	case reflect.Struct, reflect.Interface:
+		sb.WriteString("{")
+		sb.WriteString(value)
+		sb.WriteString("}")
+	case reflect.Map:
+		sb = strings.Builder{}
 		sb.WriteString("{")
 		sb.WriteString(value)
 		sb.WriteString("}")
